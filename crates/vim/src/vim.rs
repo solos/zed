@@ -668,7 +668,11 @@ impl Vim {
     fn activate(editor: &mut Editor, window: &mut Window, cx: &mut Context<Editor>) {
         let vim = Vim::new(window, cx);
         let state = vim.update(cx, |vim, cx| {
-            if !editor.use_modal_editing() {
+            // Non-full editors (agent message box, git commit, etc.) are text
+            // fields: start in Insert so CJK IMEs can show their candidate
+            // window. Normal mode sets `input_enabled = false`, which makes
+            // `selected_text_range` return None and suppresses the IME menu.
+            if !editor.use_modal_editing() || !editor.mode().is_full() {
                 vim.mode = Mode::Insert;
             }
 
@@ -1569,14 +1573,15 @@ impl Vim {
                 .newest::<MultiBufferOffset>(&editor.display_snapshot(cx))
                 .is_empty()
         });
-        let editor = editor.read(cx);
-        let editor_mode = editor.mode();
+        let (is_full, has_leader) = editor.read_with(cx, |editor, _cx| {
+            (editor.mode().is_full(), editor.leader_id().is_some())
+        });
 
-        if editor_mode.is_full()
+        if is_full
             && !newest_selection_empty
             && self.mode == Mode::Normal
             // When following someone, don't switch vim mode.
-            && editor.leader_id().is_none()
+            && !has_leader
         {
             if preserve_selection {
                 self.switch_mode(Mode::Visual, true, window, cx);
@@ -1590,6 +1595,12 @@ impl Vim {
                     });
                 });
             }
+        } else if !is_full
+            && matches!(self.mode, Mode::Normal | Mode::HelixNormal)
+            && !has_leader
+        {
+            // Refocusing a text-field editor should allow typing / IME again.
+            self.switch_mode(Mode::Insert, false, window, cx);
         }
 
         cx.emit(VimEvent::Focused);

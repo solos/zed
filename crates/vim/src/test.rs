@@ -16,7 +16,7 @@ use editor::{
 use futures::StreamExt;
 #[cfg(target_os = "windows")]
 use gpui::AppContext as _;
-use gpui::{KeyBinding, Modifiers, MouseButton, TestAppContext, px};
+use gpui::{Focusable, KeyBinding, Modifiers, MouseButton, TestAppContext, px};
 use itertools::Itertools;
 use language::{CursorShape, Language, LanguageConfig, Point};
 pub use neovim_backed_test_context::*;
@@ -3267,4 +3267,54 @@ async fn test_project_search_opens_in_normal_mode(cx: &mut gpui::TestAppContext)
 
         assert_eq!(vim_mode, Some(Mode::Normal));
     });
+}
+
+#[gpui::test]
+async fn test_auto_height_modal_editor_starts_in_insert_for_ime(cx: &mut gpui::TestAppContext) {
+    // Agent message / git commit editors use AutoHeight + modal editing. They must
+    // start (and refocus) in Insert so CJK IMEs can show candidates — Normal mode
+    // disables input_enabled, which suppresses the IME menu.
+    VimTestContext::init(cx);
+    cx.update(|cx| {
+        VimTestContext::init_keybindings(true, cx);
+    });
+
+    let (editor, cx) = cx.add_window_view(|window, cx| {
+        let buffer = MultiBuffer::build_simple("hello", cx);
+        let mut editor = Editor::new(
+            EditorMode::AutoHeight {
+                min_lines: 1,
+                max_lines: Some(5),
+            },
+            buffer,
+            None,
+            window,
+            cx,
+        );
+        editor.set_use_modal_editing(true);
+        editor
+    });
+    let mut cx = EditorTestContext::for_editor_in(editor.clone(), cx).await;
+
+    let mode = cx.update_editor(|editor, _, cx| {
+        editor.addon::<VimAddon>().unwrap().entity.read(cx).mode
+    });
+    assert_eq!(mode, Mode::Insert);
+
+    cx.simulate_keystroke("escape");
+    let mode = cx.update_editor(|editor, _, cx| {
+        editor.addon::<VimAddon>().unwrap().entity.read(cx).mode
+    });
+    assert_eq!(mode, Mode::Normal);
+
+    // Blur then refocus so EditorEvent::Focused fires and Insert is restored.
+    cx.update_editor(|editor, window, cx| {
+        window.blur();
+        assert!(!editor.focus_handle(cx).is_focused(window));
+        editor.focus_handle(cx).focus(window);
+    });
+    let mode = cx.update_editor(|editor, _, cx| {
+        editor.addon::<VimAddon>().unwrap().entity.read(cx).mode
+    });
+    assert_eq!(mode, Mode::Insert);
 }
